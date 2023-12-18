@@ -41,11 +41,12 @@ bool mqttIsConnected = false;
 bool wifiIsConnected = false;
 
 unsigned long measureTiming;
-int timeBetweenMeasurements = 2000; // ms
+int measurementsInBatch = 60;
+int timeBetweenMeasurements = 1000; // ms
+short int measurements[measurementsInBatch];
+int measurementPointer = 0;
 
-float currentWaterLevel = 0;  // cm
-
-float criticalValue = 10;     // cm
+float criticalValue = 10;     // %
 
 int totalContainerDepth = 100; // cm
 
@@ -78,11 +79,29 @@ void loop() {
   // Measure water level every timeBetweenMeasurements milliseconds
   if((millis() - measureTiming) > timeBetweenMeasurements){
 
-    float currentWaterLevel = measureWaterLevel(pinTrig1, pinEcho1);
+    float currentWaterLevel = measureWaterLevel(pinTrig1, pinEcho1); // cm or -1 if error
     
     Serial.println("Water level: " + String(currentWaterLevel) + "cm");
 
-    if (currentWaterLevel < criticalValue) {
+    float waterLevelPercent = currentWaterLevel / totalContainerDepth; // cm -> %
+    waterLevelPercent *= 100;
+
+    if(currentWaterLevel < 0){
+      measurements[measurementPointer] = -1;
+    }else{
+      measurements[measurementPointer] = (waterLevelPercent <= 100)?
+                                         ((short int)waterLevelPercent):
+                                         (100);
+    }
+
+    measurementPointer++;
+
+    if(measurementPointer >= measurementsInBatch){
+      publishWaterLevel();
+      measurementPointer = 0;
+    }
+
+    if (waterLevelPercent < criticalValue) {
       digitalWrite(ledPin1, HIGH);
       Serial.println("LED: ON");
     }else{
@@ -169,7 +188,7 @@ void reconnect() {
   delay(1000);
 
   // Attempt to connect
-  if (client.connect(clientName)) {
+  if (client.connect(clientName, "mosquitto-test-user1", "testPass123")) {
     Serial.println("connected");
     mqttIsConnected = true;
     // Once connected, publish an announcement...
@@ -213,10 +232,15 @@ float measureDistance(int pinTrig, int pinEcho){
 float measureWaterLevel(int pinTrig, int pinEcho){
   float waterLevel = totalContainerDepth - measureDistance(pinTrig, pinEcho);
 
-  int waterLevelForPublish = int(waterLevel);
+  int counter = 0;
 
-  if(client.connected() && WiFi.status() == WL_CONNECTED){
-    client.publish(waterLvlTopic, String(waterLevelForPublish).c_str());
+  while ((waterLevel < 0 || waterLevel > totalContainerDepth) && counter < 50) {
+    waterLevel = totalContainerDepth - measureDistance(pinTrig, pinEcho);
+    counter++;
+  }
+
+  if (waterLevel < 0 || waterLevel > totalContainerDepth) {
+    return -1;
   }
 
   return waterLevel;
@@ -254,5 +278,29 @@ void callbackHandler(String topic, String payload){
       // Publish new value to online topic so the server knows what the current value is
       client.publish(onlineTopic, String(totalContainerDepth).c_str());
     }
+  }
+}
+
+void publishWaterLevel(){
+  int sum = 0;
+  int numOfErrors = 0;
+
+  for(int i = 0; i < measurementsInBatch; i++){
+    if(measurements[i] < 0){
+      numOfErrors++;
+      continue;
+    }
+
+    sum += (measurements[i] > 100)?(100):(measurements[i]);
+  }
+
+  if(numOfErrors > (measurementsInBatch / 2)){
+    return;
+  }
+
+  int waterLevelForPublish = sum / (measurementsInBatch - numOfErrors);
+
+  if(client.connected() && WiFi.status() == WL_CONNECTED){
+    client.publish(waterLvlTopic, String(waterLevelForPublish).c_str());
   }
 }
