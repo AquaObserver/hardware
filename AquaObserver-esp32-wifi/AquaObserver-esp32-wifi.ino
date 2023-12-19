@@ -5,6 +5,7 @@
 
 #define PORT 5000
 #define SPEED_OF_SOUND 0.0343 // cm/us
+#define MEASUREMENTS_IN_BATCH 60
 
 // WiFi Config
 const char* ssid       = "YOUR_SSID";
@@ -41,9 +42,8 @@ bool mqttIsConnected = false;
 bool wifiIsConnected = false;
 
 unsigned long measureTiming;
-int measurementsInBatch = 60;
 int timeBetweenMeasurements = 1000; // ms
-short int measurements[measurementsInBatch];
+short int measurements[MEASUREMENTS_IN_BATCH];
 int measurementPointer = 0;
 
 float criticalValue = 10;     // %
@@ -70,6 +70,8 @@ void setup() {
 
   delay(250);
 
+  pinMode(ledPin1, OUTPUT);
+
   measureTiming = millis();
 }
 
@@ -81,7 +83,7 @@ void loop() {
 
     float currentWaterLevel = measureWaterLevel(pinTrig1, pinEcho1); // cm or -1 if error
     
-    Serial.println("Water level: " + String(currentWaterLevel) + "cm");
+    Serial.println("Water level("+ String(measurementPointer) +"): " + String(currentWaterLevel) + "cm");
 
     float waterLevelPercent = currentWaterLevel / totalContainerDepth; // cm -> %
     waterLevelPercent *= 100;
@@ -96,7 +98,7 @@ void loop() {
 
     measurementPointer++;
 
-    if(measurementPointer >= measurementsInBatch){
+    if(measurementPointer >= MEASUREMENTS_IN_BATCH){
       publishWaterLevel();
       measurementPointer = 0;
     }
@@ -234,16 +236,26 @@ float measureWaterLevel(int pinTrig, int pinEcho){
 
   int counter = 0;
 
-  while ((waterLevel < 0 || waterLevel > totalContainerDepth) && counter < 50) {
+  while ((waterLevel < -5 || waterLevel > totalContainerDepth+5) && counter < 50) {
     waterLevel = totalContainerDepth - measureDistance(pinTrig, pinEcho);
     counter++;
   }
 
-  if (waterLevel < 0 || waterLevel > totalContainerDepth) {
-    return -1;
+  if (waterLevel < 0) {
+    if(waterLevel > -5){
+      return 0;
+    }else{
+      return -1;
+    }
+  }else if(waterLevel > totalContainerDepth){
+    if(waterLevel < totalContainerDepth+5){
+      return totalContainerDepth;
+    }else{
+      return -1;
+    }
+  }else{
+    return waterLevel;
   }
-
-  return waterLevel;
 }
 
 void callbackHandler(String topic, String payload){
@@ -252,7 +264,7 @@ void callbackHandler(String topic, String payload){
     int intPayload = payload.toInt();
 
     // Change the value if the new value is between 0 and maximum depth
-    criticalValue = (intPayload > 0 && intPayload <= totalContainerDepth)?
+    criticalValue = (intPayload > 0 && intPayload <= 100)?
                     (intPayload):
                     (criticalValue);
 
@@ -260,7 +272,10 @@ void callbackHandler(String topic, String payload){
 
   }else if(topic.equals(depthCalibrationTopic)){
     // When we receive a calibration topic msg
-    float sum;
+    float sum = 0;
+
+    // Reseting measurements
+    measurementPointer = 0;
 
     // Take 10 measurements
     for(int counter = 0; counter < 10; counter++){
@@ -285,7 +300,7 @@ void publishWaterLevel(){
   int sum = 0;
   int numOfErrors = 0;
 
-  for(int i = 0; i < measurementsInBatch; i++){
+  for(int i = 0; i < MEASUREMENTS_IN_BATCH; i++){
     if(measurements[i] < 0){
       numOfErrors++;
       continue;
@@ -294,13 +309,19 @@ void publishWaterLevel(){
     sum += (measurements[i] > 100)?(100):(measurements[i]);
   }
 
-  if(numOfErrors > (measurementsInBatch / 2)){
+  if(numOfErrors > (MEASUREMENTS_IN_BATCH / 2)){
+    Serial.println("Measurements not published due to more than 50% being errors!");
     return;
   }
 
-  int waterLevelForPublish = sum / (measurementsInBatch - numOfErrors);
+  int waterLevelForPublish = sum / (MEASUREMENTS_IN_BATCH - numOfErrors);
+
+  waterLevelForPublish = (waterLevelForPublish >= 0 && waterLevelForPublish <= 100)?
+                         (waterLevelForPublish):
+                         (0);
 
   if(client.connected() && WiFi.status() == WL_CONNECTED){
+    Serial.println("Publishing water level: " + String(waterLevelForPublish) + "%");
     client.publish(waterLvlTopic, String(waterLevelForPublish).c_str());
   }
 }
