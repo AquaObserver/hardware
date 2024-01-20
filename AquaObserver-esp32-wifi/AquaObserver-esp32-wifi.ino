@@ -11,8 +11,9 @@
 const char* ssid       = "YOUR_SSID";
 const char* password   = "YOUR_PASS";
 
-// MQTT Broker Config
+// MQTT Broker Config(Choose between IP adress od domain)
 IPAddress server(192, 168, 1, 103);
+// const char* server = "mybroker.example.com";
 
 WiFiClient espWiFiClient;
 PubSubClient client(espWiFiClient);
@@ -190,7 +191,7 @@ void reconnect() {
   delay(1000);
 
   // Attempt to connect
-  if (client.connect(clientName, "mosquitto-test-user1", "testPass123")) {
+  if (client.connect(clientName)) { // Also possible to use authentication with broker with client.connect(clientName, "client username", "client password")
     Serial.println("connected");
     mqttIsConnected = true;
     // Once connected, publish an announcement...
